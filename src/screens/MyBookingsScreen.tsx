@@ -26,7 +26,8 @@ export const MyBookingsScreen: React.FC = () => {
   const navigation = useNavigation<NavProp>();
   const bookings = useBookingStore((state) => state.bookings);
   const cancelBooking = useBookingStore((state) => state.cancelBooking);
-  const currentUser = useBookingStore((state) => state.currentUser);
+  const authUserName = useBookingStore((state) => state.authUserName);
+  const authStudentId = useBookingStore((state) => state.authStudentId);
 
   const [activeTab, setActiveTab] = useState<TabFilter>('active');
   const [selectedPassBooking, setSelectedPassBooking] = useState<Booking | null>(null);
@@ -155,7 +156,7 @@ export const MyBookingsScreen: React.FC = () => {
         <Text style={styles.headerSubtitle}>VKU STUDENT RESERVATIONS</Text>
         <Text style={styles.headerTitle}>My Bookings</Text>
         <Text style={styles.studentMeta}>
-          Logged in as: {currentUser.name} ({currentUser.studentId})
+          Logged in as: {authUserName} ({authStudentId || 'No ID set'})
         </Text>
       </View>
 

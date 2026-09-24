@@ -1,10 +1,18 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Booking, BuildingCode, EquipmentType, FilterState, Room, UserProfile } from '../types';
-import { MOCK_ROOMS, INITIAL_USER } from '../data/mockRooms';
+import { Booking, BuildingCode, EquipmentType, FilterState, Room } from '../types';
+import { MOCK_ROOMS } from '../data/mockRooms';
 import { TIME_SLOTS } from '../data/timeSlots';
 import { scheduleBookingReminder, cancelBookingReminder } from '../services/notificationService';
+import {
+  fetchRooms,
+  fetchUserBookings,
+  fetchAllBookings,
+  createBookingInSupabase,
+  updateBookingStatus,
+  checkSlotAvailability,
+} from '../services/supabaseService';
 
 // Format helper for YYYY-MM-DD
 export function getFormattedDate(offsetDays = 0): string {
@@ -16,97 +24,38 @@ export function getFormattedDate(offsetDays = 0): string {
   return `${year}-${month}-${day}`;
 }
 
-// Initial sample bookings to showcase conflict engine
-const todayStr = getFormattedDate(0);
-const tomorrowStr = getFormattedDate(1);
-
-const INITIAL_BOOKINGS: Booking[] = [
-  {
-    id: 'bkg-demo-101',
-    roomId: 'room-a-204',
-    roomName: 'Smart Seminar Room A.204',
-    building: 'A',
-    floor: 2,
-    date: todayStr,
-    slotId: 'slot-2', // 09:30 - 11:30
-    slotLabel: '09:30 - 11:30',
-    studentId: '20IT102',
-    studentName: 'Le Hoang Nam',
-    studentEmail: 'namlh.20it@vku.udn.vn',
-    status: 'confirmed',
-    createdAt: new Date(Date.now() - 3600000).toISOString(),
-    qrCodePayload: JSON.stringify({
-      bookingId: 'bkg-demo-101',
-      room: 'A.204',
-      date: todayStr,
-      slot: '09:30 - 11:30',
-      student: 'Le Hoang Nam',
-    }),
-  },
-  {
-    id: 'bkg-demo-102',
-    roomId: 'room-b-305',
-    roomName: 'Mobile App Dev Lab B.305',
-    building: 'B',
-    floor: 3,
-    date: todayStr,
-    slotId: 'slot-1', // 07:30 - 09:30
-    slotLabel: '07:30 - 09:30',
-    studentId: '21IT128', // current user
-    studentName: 'Lê Bảo Long',
-    studentEmail: 'longlb.21it@vku.udn.vn',
-    status: 'confirmed',
-    createdAt: new Date(Date.now() - 7200000).toISOString(),
-    qrCodePayload: JSON.stringify({
-      bookingId: 'bkg-demo-102',
-      room: 'B.305',
-      date: todayStr,
-      slot: '07:30 - 09:30',
-      student: 'Lê Bảo Long',
-    }),
-  },
-  {
-    id: 'bkg-demo-103',
-    roomId: 'room-v-402',
-    roomName: 'VKU AI & GPU Cluster V.402',
-    building: 'V',
-    floor: 4,
-    date: tomorrowStr,
-    slotId: 'slot-3', // 13:00 - 15:00
-    slotLabel: '13:00 - 15:00',
-    studentId: '19IT015',
-    studentName: 'Dang Thi Mai',
-    studentEmail: 'maidt.19it@vku.udn.vn',
-    status: 'confirmed',
-    createdAt: new Date(Date.now() - 14400000).toISOString(),
-    qrCodePayload: JSON.stringify({
-      bookingId: 'bkg-demo-103',
-      room: 'V.402',
-      date: tomorrowStr,
-      slot: '13:00 - 15:00',
-      student: 'Dang Thi Mai',
-    }),
-  },
-];
-
 interface BookingState {
-  // User session
-  currentUser: UserProfile;
-  updateProfile: (profile: Partial<UserProfile>) => void;
-  updateUserProfile: (profile: Partial<UserProfile>) => void;
+  // Auth user info (set from AuthContext)
+  authUserId: string | null;
+  authUserName: string;
+  authUserEmail: string;
+  authStudentId: string;
+  authAvatarUrl: string;
+  setAuthUser: (params: {
+    userId: string;
+    name: string;
+    email: string;
+    studentId: string;
+    avatarUrl: string;
+  }) => void;
+  clearAuthUser: () => void;
 
   // Rooms
   rooms: Room[];
+  loadRooms: () => Promise<void>;
 
   // Bookings
   bookings: Booking[];
+  allBookings: Booking[]; // All active bookings for conflict checking
+  loadUserBookings: () => Promise<void>;
+  loadAllBookings: () => Promise<void>;
   createBooking: (params: {
     roomId: string;
     date: string;
     slotId: string;
   }) => Promise<{ success: boolean; booking?: Booking; error?: string }>;
   cancelBooking: (bookingId: string) => Promise<void>;
-  checkInBooking: (bookingId: string) => void;
+  checkInBooking: (bookingId: string) => Promise<void>;
   isSlotBooked: (roomId: string, date: string, slotId: string) => boolean;
 
   // Filter State
@@ -128,28 +77,88 @@ const DEFAULT_FILTERS: FilterState = {
 export const useBookingStore = create<BookingState>()(
   persist(
     (set, get) => ({
-      currentUser: INITIAL_USER,
-      updateProfile: (profile) =>
-        set((state) => ({
-          currentUser: { ...state.currentUser, ...profile },
-        })),
-      updateUserProfile: (profile) =>
-        set((state) => ({
-          currentUser: { ...state.currentUser, ...profile },
-        })),
+      // Auth user
+      authUserId: null,
+      authUserName: '',
+      authUserEmail: '',
+      authStudentId: '',
+      authAvatarUrl: '',
 
+      setAuthUser: ({ userId, name, email, studentId, avatarUrl }) =>
+        set({
+          authUserId: userId,
+          authUserName: name,
+          authUserEmail: email,
+          authStudentId: studentId,
+          authAvatarUrl: avatarUrl,
+        }),
+
+      clearAuthUser: () =>
+        set({
+          authUserId: null,
+          authUserName: '',
+          authUserEmail: '',
+          authStudentId: '',
+          authAvatarUrl: '',
+          bookings: [],
+          allBookings: [],
+        }),
+
+      // Rooms - load from Supabase with local fallback
       rooms: MOCK_ROOMS,
-      bookings: INITIAL_BOOKINGS,
+
+      loadRooms: async () => {
+        try {
+          const supabaseRooms = await fetchRooms();
+          if (supabaseRooms.length > 0) {
+            set({ rooms: supabaseRooms });
+          }
+          // If no rooms in DB, keep MOCK_ROOMS as fallback
+        } catch (err) {
+          console.warn('Failed to load rooms from Supabase, using local data');
+        }
+      },
+
+      // Bookings
+      bookings: [],
+      allBookings: [],
+
+      loadUserBookings: async () => {
+        const { authUserId } = get();
+        if (!authUserId) return;
+        try {
+          const userBookings = await fetchUserBookings(authUserId);
+          set({ bookings: userBookings });
+        } catch (err) {
+          console.warn('Failed to load user bookings:', err);
+        }
+      },
+
+      loadAllBookings: async () => {
+        try {
+          const allBks = await fetchAllBookings();
+          set({ allBookings: allBks });
+        } catch (err) {
+          console.warn('Failed to load all bookings:', err);
+        }
+      },
 
       isSlotBooked: (roomId: string, date: string, slotId: string) => {
-        const { bookings } = get();
-        return bookings.some(
-          (b) =>
+        const { allBookings, bookings } = get();
+        // Check both all bookings (from DB) and local bookings
+        const combined = [...allBookings, ...bookings];
+        const seen = new Set<string>();
+        return combined.some((b) => {
+          const key = `${b.roomId}-${b.date}-${b.slotId}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return (
             b.roomId === roomId &&
             b.date === date &&
             b.slotId === slotId &&
             b.status !== 'cancelled'
-        );
+          );
+        });
       },
 
       createBooking: async ({ roomId, date, slotId }) => {
@@ -164,30 +173,40 @@ export const useBookingStore = create<BookingState>()(
           return { success: false, error: 'Selected time slot is invalid.' };
         }
 
-        // Strict Conflict Prevention Engine check
-        const hasConflict = state.isSlotBooked(roomId, date, slotId);
-        if (hasConflict) {
+        // Check local conflict first
+        const hasLocalConflict = state.isSlotBooked(roomId, date, slotId);
+        if (hasLocalConflict) {
           return {
             success: false,
             error: `This slot (${slot.label}) for ${room.name} has already been reserved. Please pick another slot.`,
           };
         }
 
-        const newBookingId = `bkg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        // Double-check with Supabase
+        const isAvailable = await checkSlotAvailability(roomId, date, slotId);
+        if (!isAvailable) {
+          // Refresh all bookings to get latest state
+          await get().loadAllBookings();
+          return {
+            success: false,
+            error: `This slot (${slot.label}) for ${room.name} was just reserved by another student. Please pick another slot.`,
+          };
+        }
+
         const qrPayload = JSON.stringify({
-          bookingId: newBookingId,
           roomId: room.id,
           roomName: room.name,
           building: room.building,
           date,
           slot: slot.label,
-          studentId: state.currentUser.studentId,
-          studentName: state.currentUser.name,
+          studentId: state.authStudentId,
+          studentName: state.authUserName,
           timestamp: new Date().toISOString(),
         });
 
-        const newBooking: Booking = {
-          id: newBookingId,
+        // Insert into Supabase
+        const { data: newRow, error: insertError } = await createBookingInSupabase({
+          userId: state.authUserId || '',
           roomId: room.id,
           roomName: room.name,
           building: room.building,
@@ -195,15 +214,38 @@ export const useBookingStore = create<BookingState>()(
           date,
           slotId: slot.id,
           slotLabel: slot.label,
-          studentId: state.currentUser.studentId,
-          studentName: state.currentUser.name,
-          studentEmail: state.currentUser.email,
+          studentId: state.authStudentId,
+          studentName: state.authUserName,
+          studentEmail: state.authUserEmail,
+          qrCodePayload: qrPayload,
+        });
+
+        if (insertError) {
+          console.error('Supabase booking insert error:', insertError);
+          return {
+            success: false,
+            error: insertError.message || 'Failed to save booking to database.',
+          };
+        }
+
+        const newBooking: Booking = {
+          id: newRow.id,
+          roomId: room.id,
+          roomName: room.name,
+          building: room.building,
+          floor: room.floor,
+          date,
+          slotId: slot.id,
+          slotLabel: slot.label,
+          studentId: state.authStudentId,
+          studentName: state.authUserName,
+          studentEmail: state.authUserEmail,
           status: 'confirmed',
-          createdAt: new Date().toISOString(),
+          createdAt: newRow.created_at || new Date().toISOString(),
           qrCodePayload: qrPayload,
         };
 
-        // Schedule local push notification 15 minutes before slot starts
+        // Schedule local push notification
         const notificationId = await scheduleBookingReminder(newBooking, slot.startTime);
         if (notificationId) {
           newBooking.notificationId = notificationId;
@@ -211,6 +253,7 @@ export const useBookingStore = create<BookingState>()(
 
         set((s) => ({
           bookings: [newBooking, ...s.bookings],
+          allBookings: [newBooking, ...s.allBookings],
         }));
 
         return { success: true, booking: newBooking };
@@ -220,20 +263,39 @@ export const useBookingStore = create<BookingState>()(
         const { bookings } = get();
         const bookingToCancel = bookings.find((b) => b.id === bookingId);
 
+        // Cancel notification
         if (bookingToCancel?.notificationId) {
           await cancelBookingReminder(bookingToCancel.notificationId);
+        }
+
+        // Update in Supabase
+        const { error } = await updateBookingStatus(bookingId, 'cancelled');
+        if (error) {
+          console.error('Cancel booking error:', error);
         }
 
         set((state) => ({
           bookings: state.bookings.map((b) =>
             b.id === bookingId ? { ...b, status: 'cancelled' } : b
           ),
+          allBookings: state.allBookings.map((b) =>
+            b.id === bookingId ? { ...b, status: 'cancelled' } : b
+          ),
         }));
       },
 
-      checkInBooking: (bookingId: string) => {
+      checkInBooking: async (bookingId: string) => {
+        // Update in Supabase
+        const { error } = await updateBookingStatus(bookingId, 'checked-in');
+        if (error) {
+          console.error('Check-in booking error:', error);
+        }
+
         set((state) => ({
           bookings: state.bookings.map((b) =>
+            b.id === bookingId ? { ...b, status: 'checked-in' } : b
+          ),
+          allBookings: state.allBookings.map((b) =>
             b.id === bookingId ? { ...b, status: 'checked-in' } : b
           ),
         }));
@@ -278,14 +340,13 @@ export const useBookingStore = create<BookingState>()(
       name: 'vku-booking-storage',
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (state) => ({
-        currentUser: state.currentUser,
         bookings: state.bookings,
+        authUserId: state.authUserId,
+        authUserName: state.authUserName,
+        authUserEmail: state.authUserEmail,
+        authStudentId: state.authStudentId,
+        authAvatarUrl: state.authAvatarUrl,
       }),
-      onRehydrateStorage: () => (state) => {
-        if (state && state.currentUser && state.currentUser.name === 'Tran Minh Quan') {
-          state.currentUser = INITIAL_USER;
-        }
-      },
     }
   )
 );

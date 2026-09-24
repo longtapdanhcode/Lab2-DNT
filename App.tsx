@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
+import { AuthProvider } from './src/contexts/AuthContext';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { registerForPushNotificationsAsync } from './src/services/notificationService';
 
@@ -36,9 +37,11 @@ export default function App() {
   }, []);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <AppNavigator />
-    </SafeAreaProvider>
+    <AuthProvider>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        <AppNavigator />
+      </SafeAreaProvider>
+    </AuthProvider>
   );
 }

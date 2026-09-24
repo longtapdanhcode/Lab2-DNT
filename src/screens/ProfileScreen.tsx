@@ -17,18 +17,30 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import { useBookingStore } from '../store/useBookingStore';
+import { useAuth } from '../contexts/AuthContext';
 
 export const ProfileScreen: React.FC = () => {
-  const currentUser = useBookingStore((state) => state.currentUser);
-  const updateProfile = useBookingStore((state) => state.updateProfile);
+  const { userProfile, updateUserProfile, signOut, user } = useAuth();
   const bookings = useBookingStore((state) => state.bookings);
+  const authUserName = useBookingStore((state) => state.authUserName);
+  const authUserEmail = useBookingStore((state) => state.authUserEmail);
+  const authStudentId = useBookingStore((state) => state.authStudentId);
+  const authAvatarUrl = useBookingStore((state) => state.authAvatarUrl);
+  const setAuthUser = useBookingStore((state) => state.setAuthUser);
+
+  // Use data from auth profile or store
+  const displayName = userProfile?.full_name || authUserName || 'VKU Student';
+  const displayEmail = userProfile?.email || authUserEmail || '';
+  const displayStudentId = userProfile?.student_id || authStudentId || '';
+  const displayFaculty = userProfile?.faculty || '';
+  const displayAvatar = userProfile?.avatar_url || authAvatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=400&q=80';
 
   // Edit Profile Modal States
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [name, setName] = useState(currentUser.name);
-  const [studentId, setStudentId] = useState(currentUser.studentId);
-  const [faculty, setFaculty] = useState(currentUser.faculty);
-  const [email, setEmail] = useState(currentUser.email);
+  const [name, setName] = useState(displayName);
+  const [studentId, setStudentId] = useState(displayStudentId);
+  const [faculty, setFaculty] = useState(displayFaculty);
+  const [email, setEmail] = useState(displayEmail);
   const [errorMsg, setErrorMsg] = useState('');
 
   const activeCount = bookings.filter((b) => b.status === 'confirmed').length;
@@ -36,15 +48,15 @@ export const ProfileScreen: React.FC = () => {
   const totalHours = (activeCount + checkedInCount) * 2; // Each slot is 2 hours
 
   const handleOpenEditModal = () => {
-    setName(currentUser.name);
-    setStudentId(currentUser.studentId);
-    setFaculty(currentUser.faculty);
-    setEmail(currentUser.email);
+    setName(displayName);
+    setStudentId(displayStudentId);
+    setFaculty(displayFaculty);
+    setEmail(displayEmail);
     setErrorMsg('');
     setIsEditModalOpen(true);
   };
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
     if (!name.trim()) {
       setErrorMsg('Full name cannot be empty.');
       return;
@@ -57,24 +69,52 @@ export const ProfileScreen: React.FC = () => {
       setErrorMsg('Faculty cannot be empty.');
       return;
     }
-    if (!email.trim() || !email.includes('@')) {
-      setErrorMsg('Please enter a valid student email address.');
-      return;
+
+    try {
+      // Update in Supabase
+      await updateUserProfile({
+        full_name: name.trim(),
+        student_id: studentId.trim(),
+        faculty: faculty.trim(),
+      } as any);
+
+      // Also update the booking store
+      if (user) {
+        setAuthUser({
+          userId: user.id,
+          name: name.trim(),
+          email: displayEmail,
+          studentId: studentId.trim(),
+          avatarUrl: displayAvatar,
+        });
+      }
+
+      setIsEditModalOpen(false);
+
+      if (Platform.OS === 'web') {
+        alert('Profile updated successfully! ✅');
+      } else {
+        Alert.alert('Profile Updated 🎉', 'Your student details have been saved to the cloud.');
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to update profile.');
     }
+  };
 
-    updateProfile({
-      name: name.trim(),
-      studentId: studentId.trim(),
-      faculty: faculty.trim(),
-      email: email.trim(),
-    });
-
-    setIsEditModalOpen(false);
+  const handleSignOut = () => {
+    const doSignOut = async () => {
+      await signOut();
+    };
 
     if (Platform.OS === 'web') {
-      alert('Profile updated successfully! ✅');
+      if (window.confirm('Are you sure you want to sign out?')) {
+        doSignOut();
+      }
     } else {
-      Alert.alert('Profile Updated 🎉', 'Your student details have been updated.');
+      Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign Out', style: 'destructive', onPress: doSignOut },
+      ]);
     }
   };
 
@@ -166,18 +206,39 @@ export const ProfileScreen: React.FC = () => {
           </View>
 
           <View style={styles.idCardBody}>
-            <Image source={{ uri: currentUser.avatarUrl }} style={styles.avatar} />
+            <Image source={{ uri: displayAvatar }} style={styles.avatar} />
             <View style={styles.idStudentInfo}>
-              <Text style={styles.studentName}>{currentUser.name}</Text>
-              <Text style={styles.studentIdCode}>ID: {currentUser.studentId}</Text>
-              <Text style={styles.facultyText}>{currentUser.faculty}</Text>
-              <Text style={styles.emailText}>{currentUser.email}</Text>
+              <Text style={styles.studentName}>{displayName}</Text>
+              {displayStudentId ? (
+                <Text style={styles.studentIdCode}>ID: {displayStudentId}</Text>
+              ) : (
+                <Text style={[styles.studentIdCode, { color: '#F59E0B' }]}>Student ID not set</Text>
+              )}
+              {displayFaculty ? (
+                <Text style={styles.facultyText}>{displayFaculty}</Text>
+              ) : null}
+              <Text style={styles.emailText}>{displayEmail}</Text>
             </View>
           </View>
 
           <View style={styles.idCardFooter}>
             <Text style={styles.footerBarcode}>VKU-2026-CAMPUS-PASS</Text>
             <View style={styles.activeDot} />
+          </View>
+        </View>
+
+        {/* Google Account Badge */}
+        <View style={styles.googleBadge}>
+          <View style={styles.googleIconBox}>
+            <Text style={styles.googleIconText}>G</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.googleBadgeTitle}>Signed in with Google</Text>
+            <Text style={styles.googleBadgeEmail}>{displayEmail}</Text>
+          </View>
+          <View style={styles.verifiedBadge}>
+            <Ionicons name="checkmark-circle" size={14} color="#059669" />
+            <Text style={styles.verifiedText}>Verified</Text>
           </View>
         </View>
 
@@ -243,11 +304,35 @@ export const ProfileScreen: React.FC = () => {
             <View style={styles.menuTextWrapper}>
               <Text style={styles.menuItemTitle}>Conflict Prevention Engine</Text>
               <Text style={styles.menuItemSubtitle}>
-                Active & persisting via @react-native-async-storage
+                Active & synced with Supabase Database
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.menuDivider} />
+
+          <View style={styles.menuItem}>
+            <View style={[styles.menuIconWrapper, { backgroundColor: '#F0FDF4' }]}>
+              <Ionicons name="cloud-done" size={18} color="#059669" />
+            </View>
+            <View style={styles.menuTextWrapper}>
+              <Text style={styles.menuItemTitle}>Cloud Database</Text>
+              <Text style={styles.menuItemSubtitle}>
+                Bookings & profile stored in Supabase
               </Text>
             </View>
           </View>
         </View>
+
+        {/* Sign Out Button */}
+        <TouchableOpacity
+          style={styles.signOutButton}
+          onPress={handleSignOut}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+          <Text style={styles.signOutButtonText}>Sign Out</Text>
+        </TouchableOpacity>
 
         {/* About VKU Mini Project */}
         <View style={styles.aboutBox}>
@@ -255,6 +340,7 @@ export const ProfileScreen: React.FC = () => {
           <Text style={styles.aboutDesc}>
             Designed for Vietnam-Korea University students to streamline room reservations,
             prevent door collisions, and facilitate quick turnstile check-in across Buildings A, B, C, and V.
+            Now with Google Sign-In and cloud database powered by Supabase.
           </Text>
         </View>
       </ScrollView>
@@ -349,22 +435,18 @@ export const ProfileScreen: React.FC = () => {
               </View>
 
               <View style={styles.formGroup}>
-                <Text style={styles.formLabel}>Institutional Email</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="mail-outline" size={18} color="#64748B" style={styles.inputIcon} />
+                <Text style={styles.formLabel}>Email (from Google account)</Text>
+                <View style={[styles.inputWrapper, { backgroundColor: '#F1F5F9' }]}>
+                  <Ionicons name="mail-outline" size={18} color="#94A3B8" style={styles.inputIcon} />
                   <TextInput
-                    style={styles.textInput}
+                    style={[styles.textInput, { color: '#94A3B8' }]}
                     value={email}
-                    onChangeText={(val) => {
-                      setEmail(val);
-                      if (errorMsg) setErrorMsg('');
-                    }}
-                    placeholder="e.g. longlb.21it@vku.udn.vn"
+                    editable={false}
+                    placeholder="Linked to Google account"
                     placeholderTextColor="#94A3B8"
-                    keyboardType="email-address"
-                    autoCapitalize="none"
                   />
                 </View>
+                <Text style={styles.formHint}>Email is managed by your Google account</Text>
               </View>
             </ScrollView>
 
@@ -383,8 +465,8 @@ export const ProfileScreen: React.FC = () => {
                 onPress={handleSaveProfile}
                 activeOpacity={0.8}
               >
-                <Ionicons name="save-outline" size={16} color="#FFFFFF" />
-                <Text style={styles.saveBtnText}>Save Changes</Text>
+                <Ionicons name="cloud-upload-outline" size={16} color="#FFFFFF" />
+                <Text style={styles.saveBtnText}>Save to Cloud</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -526,6 +608,51 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: '#10B981',
   },
+  googleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 10,
+  },
+  googleIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  googleIconText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#4285F4',
+  },
+  googleBadgeTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  googleBadgeEmail: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  verifiedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  verifiedText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#059669',
+  },
   editProfileButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -613,6 +740,23 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#F1F5F9',
     marginHorizontal: 14,
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1.5,
+    borderColor: '#FECACA',
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 8,
+    marginBottom: 20,
+  },
+  signOutButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#DC2626',
   },
   aboutBox: {
     backgroundColor: '#EFF6FF',
@@ -713,6 +857,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#334155',
     marginBottom: 6,
+  },
+  formHint: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 4,
+    fontStyle: 'italic',
   },
   inputWrapper: {
     flexDirection: 'row',

@@ -9,6 +9,7 @@ import {
   Alert,
   SafeAreaView,
   StatusBar,
+  Platform,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -55,10 +56,14 @@ export const RoomDetailScreen: React.FC = () => {
 
   const handleConfirmReservation = async () => {
     if (!selectedSlot) {
-      Alert.alert(
-        'Select a Time Slot',
-        'Please select an available 2-hour time slot before confirming.'
-      );
+      if (Platform.OS === 'web') {
+        window.alert('Please select an available 2-hour time slot before confirming.');
+      } else {
+        Alert.alert(
+          'Select a Time Slot',
+          'Please select an available 2-hour time slot before confirming.'
+        );
+      }
       return;
     }
 
@@ -71,35 +76,60 @@ export const RoomDetailScreen: React.FC = () => {
       });
 
       if (!res.success) {
-        Alert.alert('Slot Unavailable', res.error || 'Conflict detected.');
-        setIsSubmitting(false);
+        if (Platform.OS === 'web') {
+          window.alert(res.error || 'Conflict detected. This slot is unavailable.');
+        } else {
+          Alert.alert('Slot Unavailable', res.error || 'Conflict detected.');
+        }
         return;
       }
 
       if (res.booking) {
-        // Successful reservation!
-        Alert.alert(
-          'Reservation Confirmed! 🎓',
-          `Your booking for ${room.name} on ${selectedDate} (${selectedSlot.label}) is confirmed. A reminder is scheduled 15 minutes before the start time.`,
-          [
-            {
-              text: 'View Digital Pass',
-              onPress: () => {
-                navigation.replace('BookingPass', { bookingId: res.booking!.id });
+        if (Platform.OS === 'web') {
+          // On web: use window.confirm for two-choice dialog
+          const viewPass = window.confirm(
+            `✅ Reservation Confirmed!\n\n` +
+            `Room: ${room.name}\n` +
+            `Date: ${selectedDate}\n` +
+            `Time: ${selectedSlot.label}\n\n` +
+            `A reminder is scheduled 15 minutes before.\n\n` +
+            `Click OK to view your Digital Pass, or Cancel to go back to rooms.`
+          );
+          if (viewPass) {
+            navigation.replace('BookingPass', { bookingId: res.booking.id });
+          } else {
+            navigation.navigate('MainTabs');
+          }
+        } else {
+          // On native: use Alert.alert with button callbacks
+          Alert.alert(
+            'Reservation Confirmed! 🎓',
+            `Your booking for ${room.name} on ${selectedDate} (${selectedSlot.label}) is confirmed. A reminder is scheduled 15 minutes before the start time.`,
+            [
+              {
+                text: 'View Digital Pass',
+                onPress: () => {
+                  navigation.replace('BookingPass', { bookingId: res.booking!.id });
+                },
               },
-            },
-            {
-              text: 'Back to Discovery',
-              onPress: () => {
-                navigation.navigate('MainTabs');
+              {
+                text: 'Back to Discovery',
+                onPress: () => {
+                  navigation.navigate('MainTabs');
+                },
+                style: 'cancel',
               },
-              style: 'cancel',
-            },
-          ]
-        );
+            ]
+          );
+        }
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to complete reservation.');
+      const errorMsg = e?.message || 'Failed to complete reservation.';
+      if (Platform.OS === 'web') {
+        window.alert(`Error: ${errorMsg}`);
+      } else {
+        Alert.alert('Error', errorMsg);
+      }
     } finally {
       setIsSubmitting(false);
     }
