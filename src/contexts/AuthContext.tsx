@@ -4,6 +4,7 @@ import { Session, User, AuthChangeEvent } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import * as WebBrowser from 'expo-web-browser';
 import * as AuthSession from 'expo-auth-session';
+import * as Linking from 'expo-linking';
 
 // Ensure the auth session completes properly on web
 if (Platform.OS === 'web') {
@@ -102,7 +103,80 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  // Listen to auth state changes
+  // Helper to extract tokens/code from callback URL (supports hash fragment & query string)
+  const extractAuthParamsFromUrl = (url: string) => {
+    let code: string | null = null;
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+    let errorDescription: string | null = null;
+
+    try {
+      // 1. Check hash fragment (implicit flow: #access_token=...&refresh_token=...)
+      const hashIndex = url.indexOf('#');
+      if (hashIndex !== -1) {
+        const hashStr = url.substring(hashIndex + 1);
+        const hashParams = new URLSearchParams(hashStr);
+        accessToken = hashParams.get('access_token');
+        refreshToken = hashParams.get('refresh_token');
+        if (!code) code = hashParams.get('code');
+        errorDescription = hashParams.get('error_description') || hashParams.get('error');
+      }
+
+      // 2. Check query string (PKCE flow: ?code=...)
+      const queryIndex = url.indexOf('?');
+      if (queryIndex !== -1) {
+        const queryEnd = hashIndex !== -1 ? hashIndex : url.length;
+        const queryStr = url.substring(queryIndex + 1, queryEnd);
+        const queryParams = new URLSearchParams(queryStr);
+        if (!code) code = queryParams.get('code');
+        if (!accessToken) accessToken = queryParams.get('access_token');
+        if (!refreshToken) refreshToken = queryParams.get('refresh_token');
+        if (!errorDescription) {
+          errorDescription = queryParams.get('error_description') || queryParams.get('error');
+        }
+      }
+    } catch (err) {
+      console.warn('[Auth] Error parsing URL parameters:', err);
+    }
+
+    return { code, accessToken, refreshToken, errorDescription };
+  };
+
+  // Helper to authenticate session with Supabase from callback URL
+  const handleAuthUrl = useCallback(async (url: string) => {
+    if (!url) return null;
+
+    const { code, accessToken, refreshToken, errorDescription } = extractAuthParamsFromUrl(url);
+
+    if (errorDescription) {
+      throw new Error(decodeURIComponent(errorDescription));
+    }
+
+    if (code) {
+      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+      if (error) {
+        console.error('[Auth] exchangeCodeForSession error:', error.message);
+        throw error;
+      }
+      return data.session;
+    }
+
+    if (accessToken) {
+      const { data, error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken || '',
+      });
+      if (error) {
+        console.error('[Auth] setSession error:', error.message);
+        throw error;
+      }
+      return data.session;
+    }
+
+    return null;
+  }, []);
+
+  // Listen to auth state changes and incoming deep links
   useEffect(() => {
     // Get initial session
     supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
@@ -114,7 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(false);
     });
 
-    // Subscribe to auth changes
+    // Subscribe to Supabase auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event: AuthChangeEvent, newSession: Session | null) => {
         setSession(newSession);
@@ -130,20 +204,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     );
 
+    // Mobile deep linking listener: handle OAuth callback when returning to app
+    const linkingSub = Linking.addEventListener('url', async ({ url }) => {
+      console.log('[Auth] Incoming deep link URL:', url);
+      if (
+        url &&
+        (url.includes('access_token=') ||
+          url.includes('code=') ||
+          url.includes('error=') ||
+          url.startsWith('lab2dnt://'))
+      ) {
+        try {
+          await handleAuthUrl(url);
+        } catch (err) {
+          console.error('[Auth] Failed to process deep link callback:', err);
+        }
+      }
+    });
+
+    // Check if app was launched via deep link cold start
+    Linking.getInitialURL().then(async (url) => {
+      if (
+        url &&
+        (url.includes('access_token=') ||
+          url.includes('code=') ||
+          url.includes('error=') ||
+          url.startsWith('lab2dnt://'))
+      ) {
+        try {
+          await handleAuthUrl(url);
+        } catch (err) {
+          console.error('[Auth] Failed to process initial URL callback:', err);
+        }
+      }
+    });
+
     return () => {
       subscription.unsubscribe();
+      linkingSub.remove();
     };
-  }, [fetchOrCreateProfile]);
+  }, [fetchOrCreateProfile, handleAuthUrl]);
 
   // Google Sign-In using Supabase OAuth
   const signInWithGoogle = useCallback(async () => {
     try {
       setIsLoading(true);
 
-      // Build the redirect URL for Expo
+      // Build the redirect URL using scheme 'lab2dnt' for Expo Go, Dev Client, and Web
       const redirectUrl = AuthSession.makeRedirectUri({
-        path: 'auth/callback',
+        scheme: 'lab2dnt',
       });
+      console.log('[Auth] Google OAuth redirectUrl:', redirectUrl);
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -158,37 +269,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data?.url) {
-        // Open the OAuth URL in a browser
+        // Open the OAuth URL in a browser session
         const result = await WebBrowser.openAuthSessionAsync(
           data.url,
           redirectUrl
         );
 
         if (result.type === 'success' && result.url) {
-          // Extract tokens from the URL
-          const url = new URL(result.url);
-
-          // Handle hash fragment (implicit flow)
-          const hashParams = new URLSearchParams(url.hash.substring(1));
-          const accessToken = hashParams.get('access_token');
-          const refreshToken = hashParams.get('refresh_token');
-
-          if (accessToken) {
-            await supabase.auth.setSession({
-              access_token: accessToken,
-              refresh_token: refreshToken || '',
-            });
-          }
-
-          // Handle query params (PKCE flow)
-          const code = url.searchParams.get('code');
-          if (code) {
-            await supabase.auth.exchangeCodeForSession(code);
-          }
+          await handleAuthUrl(result.url);
         }
       }
     } catch (error: any) {
-      console.error('Google Sign-In Error:', error);
+      console.error('[Auth] Google Sign-In Error:', error);
       const message = error?.message || 'An unexpected error occurred during sign in.';
       if (Platform.OS === 'web') {
         alert(`Sign-in failed: ${message}`);
@@ -198,7 +290,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [handleAuthUrl]);
 
   // Sign Out
   const signOut = useCallback(async () => {
